@@ -61,19 +61,46 @@ type PatchSupported interface {
 type API struct {
 	mux            *http.ServeMux
 	muxInitialized bool
+	regMiddlewares []Middleware
+	regMarshal     func(v interface{}) ([]byte, error)
+}
+
+func JsonMarshal(data interface{}) ([]byte, error) {
+	return json.MarshalIndent(data, "", "  ")
+}
+
+func ByteMarshal(data interface{}) ([]byte, error) {
+	if content, ok := data.([]byte); ok {
+		return content, nil
+	}
+
+	return nil, errors.New("Data format error")
 }
 
 // NewAPI allocates and returns a new API.
-func NewAPI() *API {
-	return &API{}
+func NewJsonAPI() *API {
+	return &API{
+		regMarshal: JsonMarshal,
+	}
 }
 
-func (api *API) requestHandler(resource interface{}) http.HandlerFunc {
+// NewAPI allocates and returns a new API.
+func NewByteAPI() *API {
+	return &API{
+		regMarshal: ByteMarshal,
+	}
+}
+
+func (this *API) requestHandler(resource interface{}) http.HandlerFunc {
 	return func(rw http.ResponseWriter, request *http.Request) {
 
 		if request.ParseForm() != nil {
 			rw.WriteHeader(http.StatusBadRequest)
 			return
+		}
+
+		for _, middleware := range this.regMiddlewares {
+			rw = middleware.OnRequest(request, rw)
 		}
 
 		var handler func(Values, *http.Request) (int, interface{}, http.Header)
@@ -112,18 +139,25 @@ func (api *API) requestHandler(resource interface{}) http.HandlerFunc {
 
 		code, data, header := handler(Values{request.Form}, request)
 
-		content, err := json.MarshalIndent(data, "", "  ")
+		content, err := this.regMarshal(data)
+
 		if err != nil {
 			rw.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+
 		for name, values := range header {
 			for _, value := range values {
 				rw.Header().Add(name, value)
 			}
 		}
-		rw.WriteHeader(code)
+
 		rw.Write(content)
+		rw.WriteHeader(code)
+
+		for _, middleware := range this.regMiddlewares {
+			rw = middleware.OnResponse(request, rw)
+		}
 	}
 }
 
@@ -154,6 +188,15 @@ func (api *API) AddResource(resource interface{}, paths ...string) {
 func (api *API) AddResourceWithWrapper(resource interface{}, wrapper func(handler http.HandlerFunc) http.HandlerFunc, paths ...string) {
 	for _, path := range paths {
 		api.Mux().HandleFunc(path, wrapper(api.requestHandler(resource)))
+	}
+}
+
+// AddResource adds a new resource to an API. The API will route
+// requests that match one of the given paths to the matching HTTP
+// method on the resource.
+func (this *API) AddMiddleware(midd Middleware) {
+	if midd != nil {
+		this.regMiddlewares = append(this.regMiddlewares, midd)
 	}
 }
 
