@@ -152,8 +152,8 @@ func (this *API) requestHandler(resource interface{}) http.HandlerFunc {
 			}
 		}
 
-		rw.Write(content)
 		rw.WriteHeader(code)
+		rw.Write(content)
 
 		for _, middleware := range this.regMiddlewares {
 			rw = middleware.OnResponse(request, rw)
